@@ -20,5 +20,7 @@ make
 # resources i used
 
 [reverse mode autodiff tutorial](https://rufflewind.com/2016-12-30/reverse-mode-automatic-differentiation)
+
 [micrograd](https://github.com/karpathy/micrograd)
+
 [numpy broadcasting](https://numpy.org/doc/stable/user/basics.broadcasting.html)
