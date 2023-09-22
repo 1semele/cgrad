@@ -15,87 +15,138 @@ typedef enum {
 } Op;
 
 typedef struct {
-	int ndim;
-	int dim[MAX_DIMS];
+    int ndim;
+    int dim[MAX_DIMS];
+} Shape;
+
+/* Iterates through a shapes indexes in row first order. */
+typedef struct {
+    int idx[MAX_DIMS];
+    Shape *sh;
+    bool first;
+} Shape_Iter;
+
+typedef struct {
+    Shape sh;
+	int stride[MAX_DIMS];
 
 	Op op;
 	
 	float *data;
 } Tensor;
 
-Tensor *tensor_create(int ndim, size_t space_needed, Op op) {
+typedef struct {
+	int idx[MAX_DIMS];
+	Tensor *t;
+    int full_idx;
+} Tensor_Iter;
+
+void shape_copy(Shape *src, Shape *dst) {
+    dst->ndim = src->ndim;
+    for (int i = 0; i < dst->ndim; i++) {
+        dst->dim[i] = src->dim[i];
+    }
+}
+
+int shape_space_needed(Shape *sh) {
+    int space = 1;
+    
+    for (int i = 0; i < sh->ndim; i++) {
+        space *= sh->dim[i];
+    }
+
+    return space;
+}
+
+Shape_Iter shape_iter_create(Shape *sh) {
+    Shape_Iter sh_iter = {
+        .sh = sh,
+        .first = true,
+    };
+
+    for (int i = 0; i < sh->ndim; i++) {
+        sh_iter.idx[i] = 0;
+    }
+
+    return sh_iter;
+}
+
+/* This can be MUCH shorter, but it's functional for now. */
+bool shape_iter_next(Shape_Iter *sh_iter) {
+    Shape *sh = sh_iter->sh;
+
+    if (sh_iter->first) {
+        sh_iter->first = false;
+        return true;
+    }
+
+    int last_dim = sh->ndim - 1;
+    sh_iter->idx[last_dim]++;
+
+    if (sh_iter->idx[last_dim] == sh->dim[last_dim]) {
+        if (last_dim == 0) {
+            return false;
+        }
+
+        sh_iter->idx[last_dim] = 0;
+        int dim = last_dim - 1;
+        while (dim != -1) {
+            if (sh_iter->idx[dim]++ == sh->dim[dim] - 1) {
+                sh_iter->idx[dim] = 0;
+                dim--;
+                continue;
+            }
+            else {
+                return true;
+            }
+        }
+        return false;
+    } 
+    
+    return true;
+}
+
+Tensor *tensor_create(Shape *sh, Op op) {
 	Tensor *t = malloc(sizeof(Tensor));
 
-	t->ndim = ndim;
+    shape_copy(sh, &t->sh);
+    int space_needed = shape_space_needed(sh);
+
+    int stride = 1;
+    for (int i = sh->ndim - 1; i >= 0; i--) {
+        t->stride[i] = stride;
+        stride *= sh->dim[i];
+    }
+
 	t->op = op;
 	t->data = malloc(sizeof(float) * space_needed);
 
 	return t;
 }
 
-Tensor *tensor_from_arr(const float *arr, size_t n) {
-	Tensor *t = tensor_create(1, n, OP_NONE);
-	t->dim[0] = n;
-	memcpy(t->data, arr, sizeof(float) * n);
-	return t;
+int tensor_compute_idx(Tensor *t, int *idx) {
+    int full_idx = 0;
+    for (int i = 0; i < t->sh.ndim; i++) {
+        full_idx += idx[i] * t->stride[i];
+    }
+    return full_idx;
 }
 
-void rand_rec(Tensor *t, int dim, int idx) {
-	if (dim == t->ndim - 1) {
-		for (int i = 0; i < t->dim[dim]; i++) {
-			t->data[idx + i] = (float)rand()/(float)(RAND_MAX);
-		}
-	} else {
-		for (int i = 0; i < t->dim[dim]; i++) {
-			rand_rec(t, dim + 1, idx + t->dim[dim] * i);
-		}
-	}
-}
+Tensor *tensor_arange(int start, int end) {
+    int len = end - start;
+    Shape sh = {
+        .ndim = 1,
+        .dim = {len},
+    };
 
-Tensor *tensor_rand(int ndim, int *in_dim) {
-	int space_needed = 1;
+    Tensor *t = tensor_create(&sh, OP_NONE);
 
-	for (int i = 0; i < ndim; i++) {
-		space_needed *= in_dim[i];
-	}
+    /* Fill in our actual data. */
+    for (int i = 0; i < len; i++) {
+        t->data[i] = i + start;
+    }
 
-	Tensor *t = tensor_create(ndim, space_needed, OP_NONE);
-	for (int i = 0; i < ndim; i++) {
-		t->dim[i] = in_dim[i];
-	}
-
-	rand_rec(t, 0, 0);
-
-	return t;
-}
-
-void value_rec(Tensor *t, float val, int dim, int idx) {
-	if (dim == t->ndim - 1) {
-		for (int i = 0; i < t->dim[dim]; i++) {
-			t->data[idx + i] = val;
-		}
-	} else {
-		for (int i = 0; i < t->dim[dim]; i++) {
-			value_rec(t, val, dim + 1, idx + t->dim[dim] * i);
-		}
-	}
-}
-
-Tensor *tensor_value(float val, int ndim, int *in_dim) {
-	int space_needed = 1;
-
-	for (int i = 0; i < ndim; i++) {
-		space_needed *= in_dim[i];
-	}
-
-	Tensor *t = tensor_create(ndim, space_needed, OP_NONE);
-	for (int i = 0; i < ndim; i++) {
-		t->dim[i] = in_dim[i];
-	}
-
-	value_rec(t, val, 0, 0);
-
-	return t;
+    return t;
 }
 
 void print_indent(int level) {
@@ -104,137 +155,70 @@ void print_indent(int level) {
 	}
 }
 
-void print_rec(Tensor *t, int dim, int idx) {
-	if (dim == t->ndim - 1) {
-		print_indent(dim);
-		printf("[");
-		for (int i = 0; i < t->dim[dim] - 1; i++) {
-			printf("%f, ", t->data[idx + i]);
-		}
-		printf("%f]\n", t->data[idx + t->dim[dim] - 1]);
-	} else {
-		print_indent(dim);
-		printf("[\n");
-		for (int i = 0; i < t->dim[dim]; i++) {
-			print_rec(t, dim + 1, idx + t->dim[dim] * i);
-		}
-		print_indent(dim);
-		printf("]\n");
-	}
-}
-
-
 void tensor_print(Tensor *t) {
-	print_rec(t, 0, 0);
-}
+    Shape_Iter sh_iter = shape_iter_create(&t->sh);
+    while (shape_iter_next(&sh_iter)) {
+        for (int i = 0; i < t->sh.ndim; i++) {
+            if (sh_iter.idx[i] == 0) {
+                printf("[");
+            }
+        }
 
-void tensor_print_shape(Tensor *t) {
-	printf("[");
-	for (int i = 0; i < t->ndim - 1; i++) {
-		printf("%d, ", t->dim[i]);
-	}
-	printf("%d]\n", t->dim[t->ndim - 1]);
-}
+        int idx = tensor_compute_idx(t, sh_iter.idx);
 
-bool tensor_check_size(Tensor *t1, Tensor *t2) {
-	if (t1->ndim != t2->ndim) {
-		return false;
-	}
+        printf("%f, ", t->data[idx]);
 
-	for (int i = 0; i < t1->ndim; i++) {
-		if (t1->dim[i] != t2->dim[i]) {
-			return false;
-		}
-	}
-
-	return true;
-}
-
-void tensor_copy_dim(Tensor *src, Tensor *dst) {
-	for (int i = 0; i < src->ndim; i++) {
-		dst->dim[i] = src->dim[i];
-	}
-}
-
-int tensor_size(Tensor *t) {
-	int size = 1;
-	for (int i = 0; i < t->ndim; i++) {
-		size *= t->dim[i];
-	}
-	return size;
-}
-
-void add_rec(Tensor *t1, Tensor *t2, Tensor *out, int dim, int idx) {
-	if (dim == t1->ndim - 1) {
-		for (int i = 0; i < t1->dim[dim]; i++) {
-			out->data[idx + i] = t1->data[idx + i] + t2->data[idx + i];
-		}
-	}
-	else {
-		for (int i = 0; i < t1->dim[dim]; i++) {
-			add_rec(t1, t2, out, dim + 1, idx + t1->dim[dim] * i);
-		}
-	}
+        for (int i = 0; i < t->sh.ndim; i++) {
+            if (sh_iter.idx[i] == t->sh.dim[i] - 1) {
+                printf("]");
+            }
+        }
+    }
 }
 
 Tensor *tensor_add(Tensor *t1, Tensor *t2) {
-	if (!tensor_check_size(t1, t2)) {
-		assert(0);
-	}
+    Shape sh;
+    shape_copy(&t1->sh, &sh);
 
-	int size = tensor_size(t1);
-	Tensor *out = tensor_create(t1->ndim, size, OP_ADD);
-	tensor_copy_dim(t1, out);
-	
-	add_rec(t1, t2, out, 0, 0);
+    Tensor *t = tensor_create(&sh, OP_ADD);
 
-	return out;
+    Shape_Iter sh_iter = shape_iter_create(&sh);
+    while (shape_iter_next(&sh_iter)) {
+        int idx1 = tensor_compute_idx(t1, sh_iter.idx);
+        int idx2 = tensor_compute_idx(t2, sh_iter.idx);
+        int idx3 = tensor_compute_idx(t, sh_iter.idx);
+
+        t->data[idx3] = t1->data[idx1] + t2->data[idx2];
+    }
+
+    return t;
 }
 
-void mul_rec(Tensor *t1, Tensor *t2, Tensor *out, int dim, int idx) {
-	if (dim == t1->ndim - 1) {
-		for (int i = 0; i < t1->dim[dim]; i++) {
-			out->data[idx + i] = t1->data[idx + i] * t2->data[idx + i];
-		}
-	}
-	else {
-		for (int i = 0; i < t1->dim[dim]; i++) {
-			mul_rec(t1, t2, out, dim + 1, idx + t1->dim[dim] * i);
-		}
-	}
-}
 
-Tensor *tensor_mul(Tensor *t1, Tensor *t2) {
-	if (!tensor_check_size(t1, t2)) {
-		assert(0);
+void shape_print(Shape *sh) {
+	printf("[");
+	for (int i = 0; i < sh->ndim - 1; i++) {
+		printf("%d, ", sh->dim[i]);
 	}
-
-	int size = tensor_size(t1);
-	Tensor *out = tensor_create(t1->ndim, size, OP_MUL);
-	tensor_copy_dim(t1, out);
-	
-	mul_rec(t1, t2, out, 0, 0);
-
-	return out;
+	printf("%d]\n", sh->dim[sh->ndim - 1]);
 }
 
 int main() {
 	srand(1);
-	
-	int shape[] = {
-		2, 3
-	};
 
-	Tensor *t1 = tensor_value(3.0, 2, shape);
-	Tensor *t2 = tensor_value(4.0, 2, shape);
-	Tensor *t3 = tensor_value(5.0, 2, shape);
-	Tensor *t4 = tensor_mul(t1, t2);
-	Tensor *t5 = tensor_add(t3, t4);
+	Tensor *t1 = tensor_arange(0, 5);
+	Tensor *t2 = tensor_arange(1, 6);
+	Tensor *t3 = tensor_add(t1, t2);
 
+    /*
 
-	tensor_print_shape(t5);
+	Tensor *t2 = tensor_rand(2, shape);
+	Tensor *t3 = tensor_add(t3, t4);
 
-	tensor_print(t5);
+	tensor_print_shape(t3);
+	tensor_print_stride(t3);
+    */
+	tensor_print(t3);
 
 	return EXIT_SUCCESS;
 }
