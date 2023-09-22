@@ -7,6 +7,8 @@
 
 #define MAX_DIMS 8
 
+#define MAX(_a, _b) ((_a) > (_b) ? (_a) : (_b))
+
 typedef enum {
 	OP_NONE = 0,
 
@@ -33,6 +35,7 @@ typedef struct {
 	Op op;
 	
 	float *data;
+    int data_size;
 } Tensor;
 
 typedef struct {
@@ -40,6 +43,28 @@ typedef struct {
 	Tensor *t;
     int full_idx;
 } Tensor_Iter;
+
+void shape_print(Shape *sh) {
+	printf("[");
+	for (int i = 0; i < sh->ndim - 1; i++) {
+		printf("%d, ", sh->dim[i]);
+	}
+	printf("%d]\n", sh->dim[sh->ndim - 1]);
+}
+
+bool shape_equal(Shape *sh1, Shape *sh2) {
+    if (sh1->ndim != sh2->ndim) {
+        return false;
+    }
+
+    for (int i = 0; i < sh1->ndim; i++) {
+        if (sh1->dim[i] != sh2->dim[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 void shape_copy(Shape *src, Shape *dst) {
     dst->ndim = src->ndim;
@@ -106,22 +131,38 @@ bool shape_iter_next(Shape_Iter *sh_iter) {
     return true;
 }
 
-Tensor *tensor_create(Shape *sh, Op op) {
+Tensor *tensor_create_with_size(Shape *sh, Op op, int space_needed) {
 	Tensor *t = malloc(sizeof(Tensor));
 
-    shape_copy(sh, &t->sh);
-    int space_needed = shape_space_needed(sh);
-
-    int stride = 1;
-    for (int i = sh->ndim - 1; i >= 0; i--) {
-        t->stride[i] = stride;
-        stride *= sh->dim[i];
+    /* [sh] can optionally be NULL, then we initialize NOTHING about its dim, stride, etc. */
+    if (sh) {
+        shape_copy(sh, &t->sh);
+        int stride = 1;
+        for (int i = sh->ndim - 1; i >= 0; i--) {
+            t->stride[i] = stride;
+            stride *= sh->dim[i];
+        }
     }
 
 	t->op = op;
 	t->data = malloc(sizeof(float) * space_needed);
+    t->data_size = space_needed;
 
 	return t;
+}
+
+Tensor *tensor_create(Shape *sh, Op op) {
+	return tensor_create_with_size(sh, op, shape_space_needed(sh));
+}
+
+
+void tensor_copy_data(Tensor *src, Tensor *dst) {
+    if (src->data_size != dst->data_size) {
+        printf("Error copying data: mismatched sizes\n");
+        exit(EXIT_FAILURE);
+    }
+
+    memcpy(dst->data, src->data, sizeof(float) * src->data_size);
 }
 
 int tensor_compute_idx(Tensor *t, int *idx) {
@@ -155,6 +196,14 @@ void print_indent(int level) {
 	}
 }
 
+void tensor_print_stride(Tensor *t) {
+    printf("[");
+    for (int i = 0; i < t->sh.ndim; i++) {
+        printf("%d, ", t->stride[i]);
+    }
+    printf("]\n");
+}
+
 void tensor_print(Tensor *t) {
     Shape_Iter sh_iter = shape_iter_create(&t->sh);
     while (shape_iter_next(&sh_iter)) {
@@ -174,11 +223,78 @@ void tensor_print(Tensor *t) {
             }
         }
     }
+    printf("\n");
+}
+
+void tensor_broadcast(Tensor *t1, Tensor *t2, Tensor **new_t1_out, Tensor **new_t2_out) {
+    Shape *sh1 = &t1->sh;
+    Shape *sh2 = &t2->sh;
+
+    int max_dim = MAX(sh1->ndim, sh2->ndim);
+
+    Tensor *new_t1 = tensor_create_with_size(NULL, OP_NONE, shape_space_needed(&t1->sh));
+    Tensor *new_t2 = tensor_create_with_size(NULL, OP_NONE, shape_space_needed(&t2->sh));
+    tensor_copy_data(t1, new_t1);
+    tensor_copy_data(t2, new_t2);
+
+    Shape sh = {
+        .ndim = max_dim,
+    };
+
+    for (int i = max_dim; i >= 0; i--) {
+        int dim1_idx = i + max_dim - sh1->ndim - 1;
+        int dim2_idx = i + max_dim - sh2->ndim - 1;
+        int dim1, dim2;
+
+        if (dim1_idx < 0) {
+            dim1 = 1;
+        } else {
+            dim1 = sh1->dim[dim1_idx];
+        }
+
+        if (dim2_idx < 0) {
+            dim2 = 1;
+        } else {
+            dim2 = sh2->dim[dim2_idx];
+        }
+
+        if (dim1 == dim2) {
+            // Nothing is required! Strides should all be in place.
+            new_t1->stride[i] = t1->stride[i];
+            new_t2->stride[i] = t2->stride[i];
+        } if (dim1 == 1) {
+            new_t1->stride[i] = 0;
+            new_t2->stride[i] = t2->stride[i];
+        } if (dim2 == 1)  {
+            new_t1->stride[i] = t1->stride[i];
+            new_t2->stride[i] = 0;
+        } else {
+            printf("Broadcasting error\n");
+            shape_print(sh1);
+            shape_print(sh2);
+            exit(EXIT_FAILURE);
+        }
+
+        sh.dim[i] = MAX(dim1, dim2);
+    }
+
+    shape_copy(&sh, &new_t1->sh);
+    shape_copy(&sh, &new_t2->sh);
+
+    *new_t1_out = new_t1;
+    *new_t2_out = new_t2;
 }
 
 Tensor *tensor_add(Tensor *t1, Tensor *t2) {
     Shape sh;
     shape_copy(&t1->sh, &sh);
+
+    if (!shape_equal(&t1->sh, &t2->sh)) {
+        Tensor *new_t1, *new_t2;
+        tensor_broadcast(t1, t2, &new_t1, &new_t2);
+        t1 = new_t1;
+        t2 = new_t2;
+    }
 
     Tensor *t = tensor_create(&sh, OP_ADD);
 
@@ -195,29 +311,15 @@ Tensor *tensor_add(Tensor *t1, Tensor *t2) {
 }
 
 
-void shape_print(Shape *sh) {
-	printf("[");
-	for (int i = 0; i < sh->ndim - 1; i++) {
-		printf("%d, ", sh->dim[i]);
-	}
-	printf("%d]\n", sh->dim[sh->ndim - 1]);
-}
-
 int main() {
 	srand(1);
 
 	Tensor *t1 = tensor_arange(0, 5);
-	Tensor *t2 = tensor_arange(1, 6);
+	Tensor *t2 = tensor_arange(1, 2);
 	Tensor *t3 = tensor_add(t1, t2);
 
-    /*
-
-	Tensor *t2 = tensor_rand(2, shape);
-	Tensor *t3 = tensor_add(t3, t4);
-
-	tensor_print_shape(t3);
-	tensor_print_stride(t3);
-    */
+	tensor_print(t1);
+	tensor_print(t2);
 	tensor_print(t3);
 
 	return EXIT_SUCCESS;
