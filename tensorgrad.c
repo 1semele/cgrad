@@ -241,9 +241,9 @@ void tensor_broadcast(Tensor *t1, Tensor *t2, Tensor **new_t1_out, Tensor **new_
         .ndim = max_dim,
     };
 
-    for (int i = max_dim; i >= 0; i--) {
-        int dim1_idx = i + max_dim - sh1->ndim - 1;
-        int dim2_idx = i + max_dim - sh2->ndim - 1;
+    for (int i = max_dim - 1; i >= 0; i--) {
+        int dim1_idx = i + max_dim - sh1->ndim;
+        int dim2_idx = i + max_dim - sh2->ndim;
         int dim1, dim2;
 
         if (dim1_idx < 0) {
@@ -286,9 +286,6 @@ void tensor_broadcast(Tensor *t1, Tensor *t2, Tensor **new_t1_out, Tensor **new_
 }
 
 Tensor *tensor_add(Tensor *t1, Tensor *t2) {
-    Shape sh;
-    shape_copy(&t1->sh, &sh);
-
     if (!shape_equal(&t1->sh, &t2->sh)) {
         Tensor *new_t1, *new_t2;
         tensor_broadcast(t1, t2, &new_t1, &new_t2);
@@ -296,9 +293,9 @@ Tensor *tensor_add(Tensor *t1, Tensor *t2) {
         t2 = new_t2;
     }
 
-    Tensor *t = tensor_create(&sh, OP_ADD);
+    Tensor *t = tensor_create(&t1->sh, OP_ADD);
 
-    Shape_Iter sh_iter = shape_iter_create(&sh);
+    Shape_Iter sh_iter = shape_iter_create(&t1->sh);
     while (shape_iter_next(&sh_iter)) {
         int idx1 = tensor_compute_idx(t1, sh_iter.idx);
         int idx2 = tensor_compute_idx(t2, sh_iter.idx);
@@ -310,17 +307,42 @@ Tensor *tensor_add(Tensor *t1, Tensor *t2) {
     return t;
 }
 
+Tensor *tensor_mul(Tensor *t1, Tensor *t2) {
+    if (!shape_equal(&t1->sh, &t2->sh)) {
+        Tensor *new_t1, *new_t2;
+        tensor_broadcast(t1, t2, &new_t1, &new_t2);
+        t1 = new_t1;
+        t2 = new_t2;
+    }
+
+    Tensor *t = tensor_create(&t1->sh, OP_ADD);
+
+    Shape_Iter sh_iter = shape_iter_create(&t1->sh);
+    while (shape_iter_next(&sh_iter)) {
+        int idx1 = tensor_compute_idx(t1, sh_iter.idx);
+        int idx2 = tensor_compute_idx(t2, sh_iter.idx);
+        int idx3 = tensor_compute_idx(t, sh_iter.idx);
+
+        t->data[idx3] = t1->data[idx1] * t2->data[idx2];
+    }
+
+    return t;
+}
 
 int main() {
 	srand(1);
 
 	Tensor *t1 = tensor_arange(0, 5);
 	Tensor *t2 = tensor_arange(1, 2);
-	Tensor *t3 = tensor_add(t1, t2);
+	Tensor *t3 = tensor_arange(5, 10);
+	Tensor *t4 = tensor_add(t1, t2);
+	Tensor *t5 = tensor_mul(t3, t4);
 
 	tensor_print(t1);
 	tensor_print(t2);
 	tensor_print(t3);
+	tensor_print(t4);
+	tensor_print(t5);
 
 	return EXIT_SUCCESS;
 }
