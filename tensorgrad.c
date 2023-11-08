@@ -28,7 +28,7 @@ typedef struct {
     bool first;
 } Shape_Iter;
 
-typedef struct {
+typedef struct Tensor {
     Shape sh;
 	int stride[MAX_DIMS];
 
@@ -36,6 +36,10 @@ typedef struct {
 	
 	float *data;
     int data_size;
+    bool is_grad;
+
+    struct Tensor *grad;
+    struct Tensor *p1, *p2;
 } Tensor;
 
 typedef struct {
@@ -131,7 +135,9 @@ bool shape_iter_next(Shape_Iter *sh_iter) {
     return true;
 }
 
-Tensor *tensor_create_with_size(Shape *sh, Op op, int space_needed) {
+Tensor *tensor_create_gradient(Shape *sh);
+
+Tensor *_tensor_create(Shape *sh, Op op, int space_needed, bool is_grad) {
 	Tensor *t = malloc(sizeof(Tensor));
 
     /* [sh] can optionally be NULL, then we initialize NOTHING about its dim, stride, etc. */
@@ -147,14 +153,34 @@ Tensor *tensor_create_with_size(Shape *sh, Op op, int space_needed) {
 	t->op = op;
 	t->data = malloc(sizeof(float) * space_needed);
     t->data_size = space_needed;
+    t->p1 = t->p2 = NULL;
+    t->is_grad = is_grad;
+
+    if (!is_grad) {
+        t->grad = tensor_create_gradient(&t->sh);
+        t->grad->is_grad = true;
+    }
 
 	return t;
+}
+
+Tensor *tensor_create_with_size(Shape *sh, Op op, int space_needed) {
+    return _tensor_create(sh, op, space_needed, false);
 }
 
 Tensor *tensor_create(Shape *sh, Op op) {
 	return tensor_create_with_size(sh, op, shape_space_needed(sh));
 }
 
+Tensor *tensor_create_gradient(Shape *sh) {
+    Tensor *t = _tensor_create(sh, OP_NONE, shape_space_needed(sh), true);
+
+    for (int i = 0; i < t->data_size; i++) {
+        t->data[i] = 0.0f;
+    }
+
+    return t;
+}
 
 void tensor_copy_data(Tensor *src, Tensor *dst) {
     if (src->data_size != dst->data_size) {
@@ -294,6 +320,8 @@ Tensor *tensor_add(Tensor *t1, Tensor *t2) {
     }
 
     Tensor *t = tensor_create(&t1->sh, OP_ADD);
+    t->p1 = t1;
+    t->p2 = t2;
 
     Shape_Iter sh_iter = shape_iter_create(&t1->sh);
     while (shape_iter_next(&sh_iter)) {
@@ -317,6 +345,9 @@ Tensor *tensor_mul(Tensor *t1, Tensor *t2) {
 
     Tensor *t = tensor_create(&t1->sh, OP_ADD);
 
+    t->p1 = t1;
+    t->p2 = t2;
+
     Shape_Iter sh_iter = shape_iter_create(&t1->sh);
     while (shape_iter_next(&sh_iter)) {
         int idx1 = tensor_compute_idx(t1, sh_iter.idx);
@@ -329,20 +360,73 @@ Tensor *tensor_mul(Tensor *t1, Tensor *t2) {
     return t;
 }
 
+void _tensor_backward_rec(Tensor *t) {
+    switch (t->op) {
+        case OP_NONE:
+            break;
+        case OP_ADD: {
+            printf("%p\n", t->p1);
+            t->p1->grad = tensor_add(t->p1->grad, t->grad);
+            t->p2->grad = tensor_add(t->p2->grad, t->grad);
+            break;
+        }
+        case OP_MUL: {
+            t->p1->grad = tensor_add(t->p1->grad, tensor_mul(t->p2->grad, t->grad));
+            t->p2->grad = tensor_add(t->p2->grad, tensor_mul(t->p1->grad, t->grad));
+            break;
+        }
+    }
+
+    if (t->p1) {
+        _tensor_backward_rec(t->p1);
+    }
+
+    if (t->p2) {
+        _tensor_backward_rec(t->p2);
+    }
+}
+
+void tensor_backward(Tensor *t) {
+    for (int i = 0; i < t->grad->data_size; i++) {
+        t->grad->data[i] = 1.0f;
+    }
+
+    _tensor_backward_rec(t);
+}
+
 int main() {
 	srand(1);
 
 	Tensor *t1 = tensor_arange(0, 5);
+
+    shape_print(&t1->sh);
+    shape_print(&t1->grad->sh);
+
 	Tensor *t2 = tensor_arange(1, 2);
-	Tensor *t3 = tensor_arange(5, 10);
-	Tensor *t4 = tensor_add(t1, t2);
+	Tensor *t3 = tensor_add(t1, t2);
+
+    /*
+	Tensor *t4 = tensor_arange(5, 10);
 	Tensor *t5 = tensor_mul(t3, t4);
+    */
+
+    tensor_backward(t3);
 
 	tensor_print(t1);
 	tensor_print(t2);
 	tensor_print(t3);
+    /*
 	tensor_print(t4);
 	tensor_print(t5);
+    */
+
+	tensor_print(t1->grad);
+	tensor_print(t2->grad);
+	tensor_print(t3->grad);
+    /*
+	tensor_print(t4->grad);
+	tensor_print(t5->grad);
+    */
 
 	return EXIT_SUCCESS;
 }
